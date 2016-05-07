@@ -91,7 +91,7 @@ class GitHubOAuthenticator(OAuthenticator):
         
         resp = yield http_client.fetch(req)
         resp_json = json.loads(resp.body.decode('utf8', 'replace'))
-        
+        self.log.debug("Access token response: %s", json.dumps(resp_json, indent=1))
         access_token = resp_json['access_token']
         
         # Determine who the logged in user is
@@ -105,6 +105,7 @@ class GitHubOAuthenticator(OAuthenticator):
                           )
         resp = yield http_client.fetch(req)
         resp_json = json.loads(resp.body.decode('utf8', 'replace'))
+        self.log.debug("User response: %s", json.dumps(resp_json, indent=1))
         
         github_username = resp_json["login"]
         #remap gihub username to system username
@@ -112,6 +113,7 @@ class GitHubOAuthenticator(OAuthenticator):
 
         #check system username against whitelist
         if self.whitelist and nix_username not in self.whitelist:
+            self.log.warn("Rejecting user %s not in whitelist", nix_username)
             nix_username = None
         return nix_username
 
