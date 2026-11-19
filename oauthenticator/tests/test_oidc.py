@@ -4,7 +4,7 @@ import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt.algorithms import RSAAlgorithm
-from pytest import fixture, mark, param
+from pytest import fixture, mark, param, raises
 from tornado import web
 from traitlets.config import Config
 
@@ -28,13 +28,20 @@ def oidc_client(client):
     return client
 
 
-def user_model():
+def user_model(extra=None):
     """Return a user model"""
-    return {
+    model = {
         "email": "user1@example.com",
+        "email_verified": True,
         "sub": "user1",
         "groups": ["group1"],
     }
+    if extra:
+        model.update(extra)
+        for key, value in extra.items():
+            if value is None:
+                model.pop(key)
+    return model
 
 
 @mark.parametrize(
@@ -122,10 +129,18 @@ async def test_oidc(
     c = Config()
     c.OIDCOAuthenticator = Config(class_config)
     c.OIDCOAuthenticator.openid_provider_url = openid_provider_url
+    c.OIDCOAuthenticator.client_id = client_id
     handled_user_model = user_model()
     handler = oidc_client.handler_for_user(handled_user_model)
 
     authenticator = OIDCOAuthenticator(config=c)
+
+    def fetch_data():
+        return oidc_client.jwks
+
+    await authenticator._load_openid_configuration()
+    authenticator.jwks_client.fetch_data = fetch_data
+
     auth_model = await authenticator.get_authenticated_user(handler, None)
 
     if expect_allowed:
@@ -227,3 +242,54 @@ async def test_oidc_id_token(
         assert auth_model is None
     else:
         raise ValueError(f"{expect_success=}")
+
+
+@mark.parametrize(
+    "email_present, email_verified, allow_unverified, expect_allowed",
+    [
+        (True, True, False, True),
+        (True, False, False, False),
+        (True, False, True, True),
+        (False, False, True, True),
+        (False, False, False, False),
+    ],
+)
+async def test_email_verified(
+    oidc_client, email_present, email_verified, allow_unverified, expect_allowed
+):
+    c = Config()
+    c.OIDCOAuthenticator = Config()
+    c.OIDCOAuthenticator.openid_provider_url = openid_provider_url
+    c.OIDCOAuthenticator.allowed_users = {"user1"}
+    c.OIDCOAuthenticator.userdata_from_id_token = False
+    c.OIDCOAuthenticator.username_claim = "sub"
+    c.OIDCOAuthenticator.client_id = client_id
+    c.OIDCOAuthenticator.allow_unverified_email = allow_unverified
+
+    def fetch_data():
+        return oidc_client.jwks
+
+    authenticator = OIDCOAuthenticator(config=c)
+    assert authenticator.allow_unverified_email == allow_unverified
+    await authenticator._load_openid_configuration()
+    authenticator.jwks_client.fetch_data = fetch_data
+
+    if email_present:
+        handled_user_model = user_model({"email_verified": email_verified})
+    else:
+        handled_user_model = user_model({"email": None, "email_verified": None})
+    handler = oidc_client.handler_for_user(handled_user_model)
+
+    if expect_allowed:
+        auth_model = await authenticator.get_authenticated_user(handler, None)
+        assert auth_model is not None
+        allowed = authenticator.check_blocked_users(auth_model["name"], auth_model)
+        assert allowed
+        allowed = await authenticator.check_allowed(auth_model["name"], auth_model)
+        assert allowed
+    else:
+        with raises(web.HTTPError) as exc_info:
+            auth_model = await authenticator.get_authenticated_user(handler, None)
+            # should not reach here, but this will give a nicer error if we do
+            assert auth_model is None
+        assert exc_info.value.status_code == 403

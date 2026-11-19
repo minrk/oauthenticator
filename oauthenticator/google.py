@@ -6,7 +6,6 @@ import os
 
 from jupyterhub.auth import LocalAuthenticator
 from tornado.auth import GoogleOAuth2Mixin
-from tornado.web import HTTPError
 from traitlets import Bool, Dict, List, Set, Unicode, default, observe, validate
 
 from .oauth2 import OAuthenticator
@@ -366,12 +365,19 @@ class GoogleOAuthenticator(OAuthenticator, GoogleOAuth2Mixin):
         """
         Overrides `Authenticator.check_blocked_users` to not only block users in
         `Authenticator.blocked_users`, but to also enforce
-        `GoogleOAuthenticator.hosted_domain` if its configured.
+        `GoogleOAuthenticator.hosted_domain` if its configured,
+        and verified emails.
 
         When hosted_domain is configured, users are required to be part of
         listed Google organizations/workspaces.
 
-        Returns False if the user is blocked or the hd is not in the hosted_domain list, otherwise returns True
+        Returns False if:
+
+        - the user is blocked or
+        - the hd is not in the hosted_domain list
+        - verified_email is not true
+
+        otherwise returns True
         """
         user_info = auth_model["auth_state"][self.user_auth_state_key]
 
@@ -382,6 +388,13 @@ class GoogleOAuthenticator(OAuthenticator, GoogleOAuth2Mixin):
             self.log.warning(
                 f"Blocked {username} with 'hd={hd}' not in restrict_hosted_domains={self.restrict_hosted_domains}"
             )
+            return False
+
+        # FIXME: when updating to Google's OIDC endpoint, this becomes email_verified
+        if user_info.get("verified_email", None) is not True:
+            user_email = user_info["email"]
+            message = f"Login with unverified email {user_email} is not allowed"
+            self.log.warning(message)
             return False
 
         return super().check_blocked_users(username, auth_model)
@@ -400,13 +413,7 @@ class GoogleOAuthenticator(OAuthenticator, GoogleOAuth2Mixin):
         # of usernames or similar, we must ensure that the authenticated user
         # has a verified email and is part of hosted_domain if configured.
         user_info = auth_model["auth_state"][self.user_auth_state_key]
-        user_email = user_info["email"]
         user_domain = user_info["domain"]
-
-        if not user_info["verified_email"]:
-            message = f"Login with unverified email {user_email} is not allowed"
-            self.log.warning(message)
-            raise HTTPError(403, message)
 
         if await super().check_allowed(username, auth_model):
             return True

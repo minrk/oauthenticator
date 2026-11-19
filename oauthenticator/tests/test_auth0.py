@@ -174,13 +174,15 @@ async def test_email_verified(
     if expect_allowed:
         auth_model = await authenticator.get_authenticated_user(handler, None)
         assert auth_model is not None
+        allowed = authenticator.check_blocked_users(auth_model["name"], auth_model)
+        assert allowed
         allowed = await authenticator.check_allowed(auth_model["name"], auth_model)
         assert allowed
     else:
         with raises(web.HTTPError) as exc_info:
             auth_model = await authenticator.get_authenticated_user(handler, None)
-            assert auth_model is not None
-            await authenticator.check_allowed(auth_model["name"], auth_model)
+            # should not reach here, but this will give a nicer error if we do
+            assert auth_model is None
         assert exc_info.value.status_code == 403
 
 

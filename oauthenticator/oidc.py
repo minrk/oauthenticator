@@ -3,7 +3,8 @@ import os
 import time
 
 from jupyterhub.auth import LocalAuthenticator
-from traitlets import Unicode, default
+from tornado.web import HTTPError
+from traitlets import Bool, Unicode, default
 
 from .oauth2 import OAuthenticator, OAuthLoginHandler
 
@@ -69,6 +70,37 @@ class OIDCOAuthenticator(OAuthenticator):
     def _scope_default(self):
         return ["openid"]
 
+    allow_unverified_email = Bool(
+        False,
+        config=True,
+        help="""
+        Allow login with unverified email.
+
+        Default is True if username_claim is 'email' or 'email' is in `scope`,
+        otherwise email verification is not checked by default.
+
+        Not recommended for most providers.
+        """,
+    )
+
+    @default("allow_unverified_email")
+    def _default_allow_unverified(self):
+        if "email" in self.scope or self.username_claim == "email":
+            self.log.info(
+                "OIDC: Requiring verified emails by default because username_claim='email'"
+            )
+            return False
+        elif "email" in self.scope:
+            self.log.info(
+                "OIDC: Requiring verified emails by default because 'email' is in scope"
+            )
+            return False
+        else:
+            self.log.info(
+                "OIDC: Not checking for verified emails. Set OIDCAuthenticator.allow_unverified_email to True or False to suppress this message."
+            )
+            return True
+
     async def _load_openid_configuration(self):
         # for required/optional fields, see
         # https://openid.net/specs/openid-connect-discovery-1_0.html#ProviderMetadata
@@ -100,6 +132,37 @@ class OIDCOAuthenticator(OAuthenticator):
         # optional fields
         if not self.logout_redirect_url:
             self.logout_redirect_url = cfg.get("end_session_endpoint", "")
+
+    async def check_blocked_users(self, username, auth_model):
+        """"""
+        # A workaround for JupyterHub < 5.0 described in
+        # https://github.com/jupyterhub/oauthenticator/issues/621
+        if auth_model is None:
+            return True
+
+        # check email_verified claim if email is in use
+        auth_state = auth_model["auth_state"]
+        id_token = auth_state["id_token"]
+        user_info = auth_state[self.user_auth_state_key]
+        claims = await self.decode_jwt(id_token)
+        merged_claims = claims | user_info
+        if merged_claims.get("email") or not self.allow_unverified_email:
+            # merge id_token claims with user_info model
+            # email could be unspecified (unlikely)
+            user_email = merged_claims.get("email", "<missing>")
+            if merged_claims.get("email_verified") is not True:
+                if self.allow_unverified_email:
+                    message = f"Allowing login for {username} with unverified email {user_email}"
+                    self.log.warning(message)
+                else:
+                    message = f"Login for {username} with unverified email {user_email} is not allowed"
+                    self.log.warning(message)
+                    raise HTTPError(403, message)
+
+        allowed = super().check_blocked_users(username, auth_model)
+        if inspect.isawaitable(allowed):
+            allowed = await allowed
+        return allowed
 
     # empty docstring to avoid showing up in api docs
     async def authenticate(self, *args, **kwargs):

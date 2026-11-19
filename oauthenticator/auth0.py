@@ -82,7 +82,7 @@ class Auth0OAuthenticator(OAuthenticator):
     def _userdata_url_default(self):
         return f"https://{self.auth0_domain}/userinfo"
 
-    async def check_allowed(self, username, auth_model):
+    def check_blocked_users(self, username, auth_model):
         # A workaround for JupyterHub < 5.0 described in
         # https://github.com/jupyterhub/oauthenticator/issues/621
         if auth_model is None:
@@ -94,7 +94,7 @@ class Auth0OAuthenticator(OAuthenticator):
         user_info = auth_model["auth_state"][self.user_auth_state_key]
         user_email = user_info["email"]
 
-        if not user_info.get("email_verified"):
+        if user_info.get("email_verified") is not True:
             if self.allow_unverified_email:
                 message = (
                     f"Allowing login for {username} with unverified email {user_email}"
@@ -105,7 +105,7 @@ class Auth0OAuthenticator(OAuthenticator):
                 self.log.warning(message)
                 raise HTTPError(403, message)
 
-        return await super().check_allowed(username, auth_model)
+        return super().check_blocked_users(username, auth_model)
 
     # _deprecated_oauth_aliases is used by deprecation logic in OAuthenticator
     _deprecated_oauth_aliases = {
